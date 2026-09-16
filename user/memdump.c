@@ -1,6 +1,7 @@
 #include "kernel/types.h"
-#include "user/user.h"
 #include "kernel/fcntl.h"
+#include "user/user.h"
+#include <stdint.h>
 
 void memdump(char *fmt, char *data);
 
@@ -60,6 +61,33 @@ main(int argc, char *argv[])
 void
 memdump(char *fmt, char *data)
 {
-  // Your code here.
+  int i = 0;
+  while(fmt[i] != '\0'){
+   if (fmt[i] == 'i'){
+         printf("%d\n",*((uint32_t *)data));
+         data += sizeof(uint32_t);
+   } else if(fmt[i] == 'p'){
+         printf("%lx\n",*((uint64_t *) data));
+         data += sizeof(uint64_t);
+   } else if(fmt[i] == 'h'){
+         printf("%d\n",*((uint16_t *)data));
+        data += sizeof(uint16_t);
+   } else if(fmt[i] == 'c'){
+         printf("%c\n",data[0]);
+          data += sizeof(char);
+   } else if(fmt[i] == 's'){
+          printf("%s\n",*((char **)data));
+           data += sizeof(char**);
+   } else if(fmt[i] == 'S'){
+         printf("%s\n",data);
+         data += sizeof(strlen(data));
+   } else {
+      fprintf(2,"memdump : format is not valid !\n");
+      return;
+   }
+   i++;
+  }
+
+   return;
 
 }
