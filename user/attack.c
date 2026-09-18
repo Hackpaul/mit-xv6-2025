@@ -11,7 +11,7 @@ main(int argc, char *argv[])
     data = sbrk(4096);
     for (int j = 0 ; j < 4096 - 16 ; j++  ) {
       if(!strcmp(data + j , "This may help.")){
-        printf("%s", data + j + 16 );
+        printf("%s", data + j + 16);
         exit(1);
       }
     }
