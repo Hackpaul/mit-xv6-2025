@@ -113,6 +113,7 @@ sys_interpose(void)
   int mask;
   argint(0,&mask);
   myproc()->sys_mask = mask; 
+  argstr(1,myproc()->alw_path,124);   // 124 - sizeof alw_path[]
   return 1;
 }
 
