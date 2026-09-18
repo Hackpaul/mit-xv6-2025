@@ -224,6 +224,8 @@ userinit(void)
   p = allocproc();
   initproc = p;
   
+  p->sys_mask = 0; // Clearing the mask
+
   p->cwd = namei("/");
 
   p->state = RUNNABLE;
@@ -290,6 +292,9 @@ kfork(void)
   pid = np->pid;
 
   release(&np->lock);
+
+  // inheriting bit_mask for interpose
+  np->sys_mask = p->sys_mask;
 
   acquire(&wait_lock);
   np->parent = p;
