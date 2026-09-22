@@ -22,7 +22,16 @@ sys_exit(void)
 uint64
 sys_getpid(void)
 {
-  return myproc()->pid;
+  pte_t *pte ;
+  struct usyscall u ;
+  u.pid = myproc()->pid;
+  pagetable_t pagetable = myproc()->pagetable; 
+  
+  pte = uvmcreate();
+  mappages( pagetable , USYSCALL , PGSIZE , (uint64)pte , PTE_R | PTE_U);
+  *(int *)(walkaddr( pagetable , USYSCALL)) = u.pid;
+  return u.pid;
+
 }
 
 uint64
