@@ -200,8 +200,12 @@ proc_pagetable(struct proc *p)
     uvmunmap(pagetable, TRAMPOLINE, 1, 0);
     uvmfree(pagetable, 0);
     return 0;
+  } 
+  
+  pte_t pte = (uint64)kalloc();
+  if ( pte ) {
+    mappages( pagetable , USYSCALL , PGSIZE , pte , PTE_R | PTE_U);
   }
-
   return pagetable;
 }
 
@@ -212,7 +216,7 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
-  uvmunmap(pagetable , USYSCALL , 1 ,0);
+  uvmunmap(pagetable , USYSCALL , 1 ,1);
   uvmfree(pagetable, sz);
 }
 
