@@ -142,9 +142,36 @@ walkaddr(pagetable_t pagetable, uint64 va)
 
 
 #if defined(LAB_PGTBL) || defined(SOL_MMAP) || defined(SOL_COW)
+
+
+void print_recurse(pte_t *pte ,int level , uint64 va){
+  uint64 i;
+  for( i = 0 ; i < 512 ; i ++){
+    if( pte[i] & PTE_V ) {
+      if(level == 2){
+        uint64 carry = va + ( (uint64)i << (12 + 9 + 9) );
+        printf("..va0x%lx: pte0x%lx pa%lx\n", carry , pte[i] , PTE2PA(pte[i]));
+         print_recurse( (pte_t *)PTE2PA(pte[i]) , 1 , carry);
+      } else if ( level == 1 ) {
+        uint64 carry = va + ( (uint64)i << (12 + 9) );
+        printf(".. ..va0x%lx: pte0x%lx pa%lx\n",carry , pte[i] , PTE2PA(pte[i]));
+         print_recurse( (pte_t *)PTE2PA(pte[i]) , 0 , carry);
+      } else {
+        uint64 carry = va + ( (uint64)i << 12 );
+         printf(".. .. ..va0x%lx: pte0x%lx pa%lx\n", carry , pte[i] , PTE2PA(pte[i]));
+      }
+    }
+
+  }
+  return;
+}
+
 void
 vmprint(pagetable_t pagetable) {
-  // your code here
+  uint64 va = 0;
+  printf("page table 0x%lx\n",(uint64)pagetable);
+  print_recurse( pagetable , 2 , va);
+
 }
 #endif
 
