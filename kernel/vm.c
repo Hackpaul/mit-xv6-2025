@@ -148,11 +148,11 @@ void print_recurse(pte_t *pte ,int level , uint64 va){
   uint64 i;
   for( i = 0 ; i < 512 ; i ++){
     if( pte[i] & PTE_V ) {
-      if(level == 2){
+      if(level == 2 && !PTE_FLAGS(pte[i])) {
         uint64 carry = va + ( (uint64)i << (12 + 9 + 9) );
         printf("..va0x%lx: pte0x%lx pa%lx\n", carry , pte[i] , PTE2PA(pte[i]));
          print_recurse( (pte_t *)PTE2PA(pte[i]) , 1 , carry);
-      } else if ( level == 1 ) {
+      } else if ( level == 1 && !PTE_FLAGS(pte[i])) {
         uint64 carry = va + ( (uint64)i << (12 + 9) );
         printf(".. ..va0x%lx: pte0x%lx pa%lx\n",carry , pte[i] , PTE2PA(pte[i]));
          print_recurse( (pte_t *)PTE2PA(pte[i]) , 0 , carry);
@@ -197,28 +197,43 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
 {
   uint64 a, last;
   pte_t *pte;
+  int sz = PGSIZE;
 
-  if((va % PGSIZE) != 0)
-    panic("mappages: va not aligned");
+  if(size / SUPERPGSIZE >= 1 && size % SUPERPGSIZE == 0){
+    sz = SUPERPGSIZE;
+  } else {
+    if((va % sz) != 0)
+      panic("mappages: va not aligned");
 
-  if((size % PGSIZE) != 0)
-    panic("mappages: size not aligned");
-
+    if((size % sz) != 0)
+      panic("mappages: size not aligned");
+  }
   if(size == 0)
     panic("mappages: size");
   
   a = va;
-  last = va + size - PGSIZE;
+  last = va + size - sz;
   for(;;){
-    if((pte = walk(pagetable, a, 1)) == 0)
-      return -1;
-    if(*pte & PTE_V)
-      panic("mappages: remap");
-    *pte = PA2PTE(pa) | perm | PTE_V;
-    if(a == last)
-      break;
-    a += PGSIZE;
-    pa += PGSIZE;
+    if(sz == PGSIZE) {
+      if((pte = walk(pagetable, a, 1)) == 0)
+        return -1;
+      if(*pte & PTE_V)
+        panic("mappages: remap");
+      *pte = PA2PTE(pa) | perm | PTE_V;
+      if(a == last)
+        break;
+      a += PGSIZE;
+      pa += PGSIZE;
+    } else {
+      for(int level = 2 ; level < 1 ; level --){
+        pte = &pagetable[PX(level,a)];
+        if(*pte & PTE_V)
+          panic("mappages: Superpage remap");
+        if()
+      } 
+      if(a == last)
+        break;
+    }
   }
   return 0;
 }
@@ -240,26 +255,33 @@ uvmcreate()
 // page-aligned. It's OK if the mappings don't exist.
 // Optionally free the physical memory.
 void
-uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
+uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int flag)   // flag values : 0 -> no free , 1 -> free , 2 -> no free (superpage) , 3 -> free (superpage)  
 {
   uint64 a;
   pte_t *pte;
   int sz = PGSIZE;
 
-  if((va % PGSIZE) != 0)
+   if (flag == 2 || flag == 3 ){
+     sz = SUPERPGSIZE;
+   }
+
+  if((va % sz) != 0)
     panic("uvmunmap: not aligned");
 
-  for(a = va; a < va + npages*PGSIZE; a += sz){
+  for(a = va; a < va + npages*sz; a += sz){
     if((pte = walk(pagetable, a, 0)) == 0) // leaf page table entry allocated?
       continue;
     if((*pte & PTE_V) == 0)  // has physical page been allocated?
       continue;
-    sz = PGSIZE;
+    //sz = PGSIZE;
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
-    if(do_free){
+    if(flag == 1){
       uint64 pa = PTE2PA(*pte);
       kfree((void*)pa);
+    } else if (flag == 3) {
+      uint64 pa = PTE2PA(*pte);
+      S_kfree((void *)pa);
     }
     *pte = 0;
   }
@@ -274,14 +296,25 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int xperm)
   char *mem;
   uint64 a;
   int sz;
+  int is_superpg = 0;
 
   if(newsz < oldsz)
     return oldsz;
 
-  oldsz = PGROUNDUP(oldsz);
+  if((newsz - oldsz)/SUPERRPGSIZE >= 1){
+    oldsz = SUPERPGROUNDUP(oldsz);
+    is_superpg = 1;
+  } else {
+    oldsz = PGROUNDUP(oldsz);
+  }
   for(a = oldsz; a < newsz; a += sz){
-    sz = PGSIZE;
-    mem = kalloc();
+    if(is_superpg){
+      sz = SUPERPGSIZE;
+      mem = S_kalloc();
+    } else {
+      sz = PGSIZE;
+      mem = kalloc();
+    }
     if(mem == 0){
       uvmdealloc(pagetable, a, oldsz);
       return 0;
@@ -308,9 +341,16 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   if(newsz >= oldsz)
     return oldsz;
 
-  if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+  if(oldsz - newsz/SUPERRPGSIZE >= 1) {
+
+    int npaages = (SUPERPGROUNDUP(oldsz) - SUPERPGROUNDUP(newsz)) / SUPERPGSIZE ;
+    uvmvunmap(pagetable , SUPERPGROUNDUP(newsz) , npages , 3);   // 3 - indicaes free page (superpage) .
+
+  } else if(PGROUNDUP(newsz) < PGROUNDUP(oldsz)){
+
     int npages = (PGROUNDUP(oldsz) - PGROUNDUP(newsz)) / PGSIZE;
     uvmunmap(pagetable, PGROUNDUP(newsz), npages, 1);
+
   }
 
   return newsz;
