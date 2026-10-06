@@ -140,8 +140,27 @@ panic(char *s)
   printf("panic: ");
   printf("%s\n", s);
   panicked = 1; // freeze uart output from other CPUs
+  backtrace();
   for(;;)
     ;
+}
+
+void backtrace(void){
+  void **fp , *ra;
+  fp = (void **)r_fp();
+
+  void *ra_limit = (void *)KERNBASE;
+  void **fp_limit = (void **)(myproc()->kstack + PGSIZE);
+
+  ra = *(fp - 1);
+
+  while( ra > ra_limit && fp < fp_limit) {
+    ra = *(fp - 1);
+    printf("%p \n",ra); 
+    fp = *(void ***)(fp - 2);
+  }
+
+  return;
 }
 
 void
