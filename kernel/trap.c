@@ -16,6 +16,8 @@ void kernelvec();
 
 extern int devintr();
 
+void return_handler(void);
+
 void
 trapinit(void)
 {
@@ -81,8 +83,18 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){
+    if (p->timer_limit > 0 && p->alarm_flag ){
+      if(p->timer_count ++ >= p->timer_limit){ // Increment timer count
+        p->p_trapframe = *p->trapframe;  
+   
+        p->trapframe->epc = p->func;
+        p->timer_count = 0;
+        p->alarm_flag = 0;
+      }
+    }
     yield();
+  }
 
   prepare_return();
 
