@@ -14,6 +14,9 @@ void freerange(void *pa_start, void *pa_end);
 extern char end[]; // first address after kernel.
                    // defined by kernel.ld.
 
+int Ref[INDEX];
+struct spinlock Reflock;
+
 struct run {
   struct run *next;
 };
@@ -27,6 +30,7 @@ void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&Reflock , "Ref");
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -35,8 +39,10 @@ freerange(void *pa_start, void *pa_end)
 {
   char *p;
   p = (char*)PGROUNDUP((uint64)pa_start);
-  for(; p + PGSIZE <= (char*)pa_end; p += PGSIZE)
+  for(int count = 0; p + PGSIZE <= (char*)pa_end; p += PGSIZE){
     kfree(p);
+    Ref[count ++] = 0;
+  }
 }
 
 // Free the page of physical memory pointed at by pa,
@@ -47,9 +53,20 @@ void
 kfree(void *pa)
 {
   struct run *r;
+  int *ind;
 
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
+
+  acquire(&Reflock);
+  ind = &Ref[GETINDEX(pa)];
+  if(*ind > 1){
+    *ind -= 1;
+    release(&Reflock);
+    return;
+  }
+    *ind = 0;  // clear index within the lock.
+  release(&Reflock);
 
   // Fill with junk to catch dangling refs.
   memset(pa, 1, PGSIZE);
@@ -74,9 +91,42 @@ kalloc(void)
   r = kmem.freelist;
   if(r)
     kmem.freelist = r->next;
+  acquire(&Reflock);
+  if(r)
+    Ref[GETINDEX((uint64) r)] = 1;
+  release(&Reflock);
   release(&kmem.lock);
 
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+void
+inc_ind(uint64 pa)
+{
+ acquire(&Reflock);
+ if(pa > KERNBASE)
+   Ref[GETINDEX(pa)] += 1;
+ release(&Reflock);
+ return;
+}
+
+void
+dec_ind(uint64 pa)
+{
+ acquire(&Reflock);
+
+ if(!(pa > KERNBASE))
+   panic("cant dec index");
+ Ref[GETINDEX(pa)] -= 1;
+
+release(&Reflock);
+}
+
+int 
+get_ind(uint64 pa)
+{
+  if(pa > KERNBASE)
+    return Ref[GETINDEX(pa)];
+  return -1;
 }
