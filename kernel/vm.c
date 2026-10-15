@@ -105,8 +105,9 @@ walk(pagetable_t pagetable, uint64 va, int alloc)
     if(*pte & PTE_V) {
       pagetable = (pagetable_t)PTE2PA(*pte);
     } else {
-      if(!alloc || (pagetable = (pde_t*)kalloc()) == 0)
+      if(!alloc || (pagetable = (pde_t*)kalloc()) == 0){
         return 0;
+      }
       memset(pagetable, 0, PGSIZE);
       *pte = PA2PTE(pagetable) | PTE_V;
     }
@@ -203,7 +204,9 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
       continue;   
     if((*pte & PTE_V) == 0)  // has physical page been allocated?
       continue;
-    if(do_free){
+
+
+    if(do_free) {
       uint64 pa = PTE2PA(*pte);
       kfree((void*)pa);
     }
@@ -299,28 +302,24 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       continue;   // page table entry hasn't been allocated
     if((*pte & PTE_V) == 0)
       continue;   // physical page hasn't been allocated
+    if(*pte & PTE_W || (*pte & PTE_C)){
+      *pte &= ~(PTE_W);
+      *pte |= PTE_C;
+    }
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
+      panic("uvmcopy : failed!");
     }
+    inc_ind((uint64)pa);
   }
   return 0;
-
- err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
-  return -1;
 }
 
 // mark a PTE invalid for user access.
@@ -349,18 +348,23 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
     va0 = PGROUNDDOWN(dstva);
     if(va0 >= MAXVA)
       return -1;
-  
+    
+    pte = walk(pagetable, va0, 0);
+
     pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0) {
+    if(pa0 == 0 || (*pte & PTE_V) == 0) {
       if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
         return -1;
       }
     }
 
-    pte = walk(pagetable, va0, 0);
     // forbid copyout over read-only user text pages.
-    if((*pte & PTE_W) == 0)
-      return -1;
+    if((*pte & PTE_W) == 0){
+     vmfault(pagetable , va0 , 1);
+     if((*pte & PTE_W) == 0)
+        return -1;
+    }
+    pa0 = PTE2PA(*pte);
       
     n = PGSIZE - (dstva - va0);
     if(n > len)
@@ -452,22 +456,45 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 uint64
 vmfault(pagetable_t pagetable, uint64 va, int read)
 {
-  uint64 mem;
+  uint64 mem ;
+  int flag;
   struct proc *p = myproc();
+  pte_t *pte;
 
-  if (va >= p->sz)
+  if (va >= p->sz || va < PGSIZE)
     return 0;
   va = PGROUNDDOWN(va);
-  if(ismapped(pagetable, va)) {
+  flag = ismapped(pagetable, va);
+
+  pte = walk(pagetable , va , 0);
+  if(flag  == 1) {         // Lazy allocation
+  } else if (flag == -1){  // COW
+    if(get_ind(PTE2PA(*pte)) > 1){
+      *pte &= ~(PTE_V);
+    } else {
+      *pte &= ~(PTE_C);
+       *pte |= PTE_W;
+       return 1;
+    }
+  } else {                 // Fault 
+     return 0;
+  }
+
+  mem = (uint64) kalloc();
+  if(mem == 0){
     return 0;
   }
-  mem = (uint64) kalloc();
-  if(mem == 0)
-    return 0;
-  memset((void *) mem, 0, PGSIZE);
-  if (mappages(p->pagetable, va, PGSIZE, mem, PTE_W|PTE_U|PTE_R) != 0) {
-    kfree((void *)mem);
-    return 0;
+  if(flag == -1){
+    memmove((char *)mem , (char *)PTE2PA((uint64)(*pte)) , PGSIZE);
+    //dec_ind(PTE2PA(*pte));
+    kfree((void *)PTE2PA((uint64)*pte));
+    *pte = PA2PTE((uint64)mem) | PTE_V | PTE_U | PTE_W | PTE_R;
+  } else {
+    memset((void *) mem, 0, PGSIZE); 
+    if (mappages(p->pagetable, va, PGSIZE, mem, PTE_W|PTE_U|PTE_R) != 0) {
+      kfree((void *)mem);
+      return 0;
+   }
   }
   return mem;
 }
@@ -476,11 +503,17 @@ int
 ismapped(pagetable_t pagetable, uint64 va)
 {
   pte_t *pte = walk(pagetable, va, 0);
-  if (pte == 0) {
+
+  if(pte == 0 || (*pte & PTE_V) == 0)
+    return 1;
+  // COW 
+  if((pte != 0) && (*pte & PTE_V) && (*pte & PTE_U) && (*pte & PTE_C)){
+    return -1;
+  }
+
+  // Actual fault
+  if (*pte & PTE_V){
     return 0;
   }
-  if (*pte & PTE_V){
-    return 1;
-  }
-  return 0;
+  return 1;
 }
