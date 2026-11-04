@@ -53,6 +53,7 @@ struct ip {
   uint32 ip_src, ip_dst;
 };
 
+
 #define IPPROTO_ICMP 1  // Control message protocol
 #define IPPROTO_TCP  6  // Transmission control protocol
 #define IPPROTO_UDP  17 // User datagram protocol
@@ -125,3 +126,16 @@ struct dns_data {
   uint32 ttl;
   uint16 len;
 } __attribute__((packed));
+
+#define MAX_BUF 16
+struct sock{
+  int     port;
+  int     status;
+  int     head;
+  int     tail;
+  int     count;
+  uint16  sport[MAX_BUF];
+  uint32  src[MAX_BUF];
+  char    *buf[MAX_BUF];
+  uint16     len[MAX_BUF];
+};
