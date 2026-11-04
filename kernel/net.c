@@ -10,6 +10,8 @@
 #include "file.h"
 #include "net.h"
 
+#define MAX_SOCKET 16
+
 // xv6's ethernet and IP addresses
 static uint8 local_mac[ETHADDR_LEN] = { 0x52, 0x54, 0x00, 0x12, 0x34, 0x56 };
 static uint32 local_ip = MAKE_IP_ADDR(10, 0, 2, 15);
@@ -18,11 +20,20 @@ static uint32 local_ip = MAKE_IP_ADDR(10, 0, 2, 15);
 static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
 static struct spinlock netlock;
+static struct spinlock socklock;
+static struct spinlock r_sock;
+static struct spinlock lk;
+
+struct sock socket[MAX_SOCKET];
 
 void
 netinit(void)
 {
   initlock(&netlock, "netlock");
+  initlock(&socklock, "socklock");
+  initlock(&r_sock , "read sock lock");
+
+  memset(socket , 0 , MAX_SOCKET * sizeof(struct sock));
 }
 
 
@@ -37,7 +48,24 @@ sys_bind(void)
   //
   // Your code here.
   //
+  int port , i = 0;
 
+  argint(0,&port);
+     
+  acquire(&socklock);
+  for(;i < MAX_SOCKET ; i ++){
+    if( socket[i].port == port ){
+      release(&socklock);
+      return -1;
+    }
+    if(socket[i].status == 0){
+      socket[i].status = 1;
+      release(&socklock);
+      socket[i].port = port;
+      return 0;
+    }
+  }
+  release(&socklock);
   return -1;
 }
 
@@ -49,11 +77,23 @@ sys_bind(void)
 uint64
 sys_unbind(void)
 {
-  //
-  // Optional: Your code here.
-  //
 
-  return 0;
+  // this unbind , will leave the buff waiting in the socket be unfreed , causes memory leak!.
+ 
+  int port;
+  int i = 0;
+
+  argint(0,&port);
+  for(; i < MAX_SOCKET ; i++){
+    if(socket[i].port == port)
+      goto found;
+  }
+  return -1;
+
+found:
+   socket[i].port = 0;
+   socket[i].status = 0;
+   return 0;
 }
 
 //
@@ -74,10 +114,60 @@ sys_unbind(void)
 uint64
 sys_recv(void)
 {
-  //
-  // Your code here.
-  //
+  int dport, maxlen;
+  uint64 src;
+  uint64 sport;
+  uint64 buf;
+
+  argint(0,&dport);
+  argaddr(1,&src);
+  argaddr(2,&sport);
+  argaddr(3,&buf);
+  argint(4,&maxlen);
+
+
+
+  struct proc *p = myproc();
+  struct sock *s;
+
+  for(int i = 0; i < MAX_SOCKET ; i++){
+    s = socket + i;
+
+    if(s->port == dport && s->status == 1){
+
+     // printf("inside rcv !\n");
+
+      if( s->count ) {         // if non empty buffers
+        acquire(&r_sock);
+        goto found;
+      } else {                       // if empty buffers
+        acquire(&lk);
+        sleep(s,&lk);
+        release(&lk);
+        acquire(&r_sock);
+        goto found;
+      }
+    }
+  }
   return -1;
+
+found:
+
+    copyout(p->pagetable , src   , (char *)&s->src[s->head] , 8);
+    copyout(p->pagetable , sport , (char *)&s->sport[s->head] , 2);
+
+    if(maxlen > s->len[s->head])
+      maxlen = s->len[s->head];
+
+    copyout(p->pagetable , buf ,s->buf[s->head] , maxlen);
+    if(s->buf[s->head])
+      kfree(s->buf[s->head]);
+    s->buf[s->head] = 0;
+
+    s->count --;
+    s->head = (s->head + 1 ) % MAX_SOCKET;
+    release(&r_sock);
+    return maxlen;
 }
 
 // This code is lifted from FreeBSD's ping.c, and is copyright by the Regents
@@ -188,10 +278,61 @@ ip_rx(char *buf, int len)
     printf("ip_rx: received an IP packet\n");
   seen_ip = 1;
 
-  //
-  // Your code here.
-  //
+  if(!buf || !len)
+    return;
+
+  struct eth *ineth = (struct eth *)buf;
+  struct ip *inip = (struct ip *)(ineth + 1);
   
+  if(inip->ip_p != IPPROTO_UDP)
+    goto exit;
+
+  // printf("inside 1st udp \n");
+  struct udp *inudp = (struct udp *)(inip + 1);
+
+  // swapping
+  inudp->sport = ntohs(inudp->sport); 
+  inudp->dport = ntohs(inudp->dport);
+  inudp->ulen  = ntohs(inudp->ulen);
+
+  char *payload = (char *)(inudp + 1);
+  uint16 length =  inudp->ulen - sizeof(struct udp);
+
+  if(length <= 0 )  //drop if empty payload.
+   goto exit;
+  
+  for(int i = 0 ; i < MAX_SOCKET ; i ++){
+    
+    // printf("inside ip udp !\n");
+    struct sock *s = socket + i;
+    if(s->port == inudp->dport){
+      char *buffer = (char *)kalloc();
+      if(!buffer)
+        goto exit;
+      //printf("passed buf in udp \n");
+      memmove(buffer , payload , length);
+      acquire(&r_sock);
+      s->buf[s->tail] = buffer;
+      s->len[s->tail] = length;
+      s->sport[s->tail] = inudp->sport;
+      s->src[s->tail] =  ntohl(inip->ip_src);
+      s->tail = (s->tail + 1) % MAX_BUF;
+      release(&r_sock);
+
+      if(s->count ++ == 0)      // if empty , triggers wakeup call.
+        wakeup(s);            // if there is no in sleep just skips!
+
+
+      goto exit;
+    }
+  }
+  
+  kfree(buf);
+  return;
+
+exit:
+  kfree(buf);
+  return;
 }
 
 //
