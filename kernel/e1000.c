@@ -17,6 +17,8 @@ static struct rx_desc rx_ring[RX_RING_SIZE] __attribute__((aligned(16)));
 static volatile uint32 *regs;
 
 struct spinlock e1000_lock;
+struct spinlock e1000_r;
+struct spinlock e1000_t;
 
 // called by pci_init().
 // xregs is the memory address at which the
@@ -29,6 +31,8 @@ e1000_init(uint32 *xregs)
   int i;
 
   initlock(&e1000_lock, "e1000");
+  initlock(&e1000_r,"e1000_rx");
+  initlock(&e1000_t,"e1000_tx");
 
   regs = xregs;
 
@@ -63,6 +67,7 @@ e1000_init(uint32 *xregs)
   regs[E1000_RDH] = 0;
   regs[E1000_RDT] = RX_RING_SIZE - 1;
   regs[E1000_RDLEN] = sizeof(rx_ring);
+  
 
   // filter by qemu's MAC address, 52:54:00:12:34:56
   regs[E1000_RA] = 0x12005452;
@@ -105,6 +110,32 @@ e1000_transmit(char *buf, int len)
   // so that the caller knows to free buf.
   //
 
+  if(!len || buf == 0)
+    return -1;
+  acquire(&e1000_t);
+
+  uint32 t_ind = regs[E1000_TDT];
+  
+
+  if((tx_ring[t_ind].status & E1000_TXD_STAT_DD) == 0){  // check does the previous transmition completed
+    release(&e1000_t);
+    return -1;
+  }
+  if(tx_ring[t_ind].addr != 0){
+    printf("%lx\n",tx_ring[t_ind].addr);
+    kfree((char *) tx_ring[t_ind].addr);
+    tx_ring[t_ind].addr = 0;
+    tx_ring[t_ind].length = 0;
+    tx_ring[t_ind].cmd = 0;
+  }
+
+  tx_ring[t_ind].addr = (uint64)buf;
+  tx_ring[t_ind].length = len;
+  tx_ring[t_ind].cmd = tx_ring[t_ind].cmd | E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+  tx_ring[t_ind].status = 0;
+
+  regs[E1000_TDT] = (1 + t_ind) % TX_RING_SIZE;
+  release(&e1000_t);
   
   return 0;
 }
@@ -118,8 +149,26 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver a buf for each packet (using net_rx()).
   //
-
-}
+  while(1){
+    acquire(&e1000_r);
+    uint32 t_ind = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+    if(!(rx_ring[t_ind].status & E1000_RXD_STAT_DD)){
+      release(&e1000_r);
+      return;
+    }
+    struct rx_desc *ptr = rx_ring + t_ind;
+    ptr->status = 0;
+    uint64 addr = ptr->addr;
+    uint32 length = ptr->length;
+    char *buf = kalloc();
+    if(!buf)
+      panic("e1000 out of memory!");
+    ptr->addr = (uint64)buf;
+    regs[E1000_RDT]  = ( regs[E1000_RDT] + 1 ) % RX_RING_SIZE;
+    release(&e1000_r);
+    net_rx((char *)addr , (int)length);
+  }
+  }
 
 void
 e1000_intr(void)
