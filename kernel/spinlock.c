@@ -124,7 +124,6 @@ release(struct spinlock *lk)
 static void
 read_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
     
   while(__atomic_load_n(&rwlk->writer , __ATOMIC_ACQUIRE)){
     ;
