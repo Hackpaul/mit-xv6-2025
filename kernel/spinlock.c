@@ -125,28 +125,44 @@ static void
 read_acquire_inner(struct rwspinlock *rwlk)
 {
   // Replace this with your implementation.
-  acquire(&rwlk->l);
+    
+  while(__atomic_load_n(&rwlk->writer , __ATOMIC_ACQUIRE)){
+    ;
+  }
+  __atomic_add_fetch(&rwlk->reader , 1 ,__ATOMIC_RELAXED);
+
 }
+
 
 static void
 read_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  release(&rwlk->l);
+  if(__atomic_sub_fetch(&rwlk->reader , 1 , __ATOMIC_RELEASE) < 0)
+    panic("release : read");
 }
 
 static void
 write_acquire_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  acquire(&rwlk->l);
+  __atomic_add_fetch(&rwlk->writer , 1 , __ATOMIC_ACQUIRE);
+
+  while(__atomic_exchange_n(&rwlk->locked , 1 , __ATOMIC_ACQ_REL) == 1){
+    ;
+  }
+
+  while(__atomic_load_n(&rwlk->reader , __ATOMIC_ACQUIRE) > 0){
+    ;
+  }
 }
 
 static void
 write_release_inner(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  release(&rwlk->l);
+  if(__atomic_exchange_n(&rwlk->locked , 0 , __ATOMIC_RELEASE) == 0)
+    panic("release : write");
+
+  if(__atomic_sub_fetch(&rwlk->writer , 1 , __ATOMIC_RELEASE) < 0)
+    panic("release : write");
 }
 
 void
@@ -180,8 +196,8 @@ write_release(struct rwspinlock *rwlk)
 void
 initrwlock(struct rwspinlock *rwlk)
 {
-  // Replace this with your implementation.
-  initlock(&rwlk->l, "rwlk");
+  rwlk->writer = 0;
+  rwlk->reader = 0;
 }
 
 // Test rwspinlock implementation.
